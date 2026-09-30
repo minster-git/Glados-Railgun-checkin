@@ -97,6 +97,7 @@ class Config:
     """应用配置"""
 
     ENV_PUSH_KEY = "PUSHDEER_SENDKEY"
+    ENV_BARK_KEY = "BARK_KEY"
     ENV_COOKIES = "GLADOS_COOKIES"
     ENV_EXCHANGE_PLAN = "GLADOS_EXCHANGE_PLAN"
     ENV_VERBOSE = "GLADOS_VERBOSE"
@@ -119,6 +120,7 @@ class Config:
 
     def __init__(self):
         self.push_key: str = ""
+        self.bark_key: str = ""
         self.cookies_list: List[str] = []
         self.exchange_plan: str = self.DEFAULT_EXCHANGE_PLAN
         self.verbose: bool = self.DEFAULT_VERBOSE
@@ -136,6 +138,14 @@ class Config:
             self.push_key = ""
         else:
             self.push_key = push_key_env
+
+        bark_key_env: Optional[str] = os.environ.get(self.ENV_BARK_KEY)
+        if not bark_key_env:
+            logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_BARK_KEY}' 未设置，将使用 PushDeer（若有）。")
+            self.bark_key = ""
+        else:
+            self.bark_key = bark_key_env
+            logger.info(f"{LogEmoji.SUCCESS} 已启用 Bark 推送。")
 
         if not raw_cookies_env:
             logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_COOKIES}' 未设置。")
@@ -458,18 +468,38 @@ class PushService:
         self.config = config
 
     def send(self, title: str, content: str) -> bool:
-        """发送推送"""
+        """发送推送（Bark 优先，PushDeer 后备）"""
+        if self.config.bark_key:
+            return self._send_bark(title, content)
         if not self.config.push_key:
-            logger.info(f"{LogEmoji.WARNING} 未设置推送密钥，跳过推送通知。")
+            logger.info(f"{LogEmoji.WARNING} 未设置推送密钥（BARK_KEY / PUSHDEER_SENDKEY），跳过推送通知。")
             return False
 
         try:
             pushdeer = PushDeer(pushkey=self.config.push_key)
             pushdeer.send_text(title, desp=content)
-            logger.info(f"{LogEmoji.SUCCESS} 推送通知发送成功。")
+            logger.info(f"{LogEmoji.SUCCESS} PushDeer 推送通知发送成功。")
             return True
         except Exception as e:
-            logger.error(f"{LogEmoji.ERROR} 发送推送通知失败: {e}")
+            logger.error(f"{LogEmoji.ERROR} 发送 PushDeer 推送通知失败: {e}")
+            return False
+
+    def _send_bark(self, title: str, content: str) -> bool:
+        """通过 Bark 发送推送（Bark 官方 API：POST https://api.day.app/<device_key>）"""
+        try:
+            resp = requests.post(
+                f"https://api.day.app/{self.config.bark_key}",
+                json={"title": title, "body": content},
+                timeout=(10, 30),
+            )
+            data = resp.json()
+            if resp.ok and data.get("code") == 200:
+                logger.info(f"{LogEmoji.SUCCESS} Bark 推送通知发送成功。")
+                return True
+            logger.error(f"{LogEmoji.ERROR} Bark 推送失败: HTTP {resp.status_code} {data}")
+            return False
+        except Exception as e:
+            logger.error(f"{LogEmoji.ERROR} 发送 Bark 推送通知失败: {e}")
             return False
 
 
